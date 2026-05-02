@@ -180,6 +180,8 @@ npm run dev
 
 Linux / macOS 可执行：`./run_dev.sh`（同样一键同时启动前后端，优先使用 pnpm 国内源）。
 
+停止前后端可执行：`./run_dev_stop.sh`（按端口清理后端 5679 与前端 3013 的监听进程）。
+
 📖 更详细的开发、打包、Docker 指南请见 → **[快速开始文档](docs/quickstart.md)**
 
 ---
