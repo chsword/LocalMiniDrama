@@ -226,6 +226,9 @@
               <el-option v-for="m in formModelList" :key="m" :label="m" :value="m" />
             </el-select>
             <p class="field-tip">实际调用时使用的模型，可从预设列表中选择。</p>
+            <p v-if="usesMaxCompletionTokensModel" class="field-tip field-tip-warn">
+              当前模型 {{ currentModelForHint }} 属于 gpt-5/o 系列，请求参数将自动使用 max_completion_tokens。
+            </p>
           </el-form-item>
           <el-form-item>
             <template #label>
@@ -784,6 +787,9 @@ input_reference = (图片文件，可选)</pre>
             <el-option v-for="m in formModelList" :key="m" :label="m" :value="m" />
           </el-select>
           <p class="field-tip">该配置被选为「默认」时，生成故事/图片/视频将使用此处指定的模型。</p>
+          <p v-if="usesMaxCompletionTokensModel" class="field-tip field-tip-warn">
+            当前模型 {{ currentModelForHint }} 属于 gpt-5/o 系列，请求参数将自动使用 max_completion_tokens。
+          </p>
         </el-form-item>
         </template>
         <el-form-item>
@@ -976,6 +982,15 @@ input_reference = (图片文件，可选)</pre>
         />
       </template>
       <el-alert v-else type="error" :title="testError || '连接失败'" show-icon :closable="false" />
+      <el-alert
+        v-if="testErrorTokenParamMismatch"
+        style="margin-top: 10px"
+        type="warning"
+        title="检测到 token 参数兼容问题"
+        description="当前后端已支持自动在 max_tokens 与 max_completion_tokens 间切换。请重启后端后再测试，gpt-5/o 系列建议使用 max_completion_tokens。"
+        show-icon
+        :closable="false"
+      />
       <template #footer>
         <el-button @click="testVisible = false">关闭</el-button>
       </template>
@@ -1111,6 +1126,18 @@ const form = ref({
 const presetModelPick = ref('')
 
 const formModelList = computed(() => parseModelText(form.value.modelText))
+const currentModelForHint = computed(() => {
+  return (form.value.default_model || formModelList.value[0] || '').trim()
+})
+const usesMaxCompletionTokensModel = computed(() => {
+  const m = currentModelForHint.value.toLowerCase()
+  if (!m) return false
+  return /^o\d/.test(m) || m.startsWith('gpt-5')
+})
+const testErrorTokenParamMismatch = computed(() => {
+  const msg = String(testError.value || '').toLowerCase()
+  return msg.includes('unsupported parameter') && (msg.includes('max_tokens') || msg.includes('max_completion_tokens'))
+})
 
 // 保证「生成时默认使用」下拉有可选且选中值在列表内，否则会不显示或修改无效
 watch(
@@ -2197,6 +2224,9 @@ code {
   font-size: 12px;
   color: #909399;
   line-height: 1.4;
+}
+.field-tip-warn {
+  color: #b45309;
 }
 .form-label-tip {
   display: inline-flex;

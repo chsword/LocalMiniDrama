@@ -224,6 +224,43 @@ function buildChatUrl(config) {
   return base + ep;
 }
 
+function modelNeedsMaxCompletionTokens(model) {
+  const m = String(model || '').toLowerCase();
+  // OpenAI 新推理/长思考模型（o*）以及 GPT-5 系列使用 max_completion_tokens
+  return /^o\d/.test(m) || m.startsWith('gpt-5');
+}
+
+function buildTokenLimitPayload(model, maxTokens) {
+  if (maxTokens == null) return {};
+  const n = Number(maxTokens);
+  if (!Number.isFinite(n) || n <= 0) return {};
+  return modelNeedsMaxCompletionTokens(model)
+    ? { max_completion_tokens: n }
+    : { max_tokens: n };
+}
+
+function isTokenParamUnsupportedError(err) {
+  const msg = String(err?.message || '').toLowerCase();
+  return msg.includes('unsupported parameter')
+    && (msg.includes('max_tokens') || msg.includes('max_completion_tokens'));
+}
+
+function swapTokenLimitPayload(body, maxTokens) {
+  const n = Number(maxTokens);
+  const next = { ...body };
+  if ('max_tokens' in next) {
+    delete next.max_tokens;
+    next.max_completion_tokens = n;
+    return next;
+  }
+  if ('max_completion_tokens' in next) {
+    delete next.max_completion_tokens;
+    next.max_tokens = n;
+    return next;
+  }
+  return next;
+}
+
 function getModelFromConfig(config, preferredModel) {
   const models = Array.isArray(config.model) ? config.model : (config.model != null ? [config.model] : []);
   if (preferredModel && models.includes(preferredModel)) return preferredModel;
@@ -330,21 +367,43 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
       { role: 'user', content: userPrompt },
     ],
     temperature: Number(temperature),
-    ...(finalMaxTokens != null ? { max_tokens: finalMaxTokens } : {}),
+    ...buildTokenLimitPayload(model, finalMaxTokens),
     ...(json_mode ? { response_format: { type: 'json_object' } } : {}),
   };
   const startMs = Date.now();
   log.info('AI generateText request', { url: url.slice(0, 60), model, max_tokens: finalMaxTokens ?? '(model default)', json_mode, stream: true });
-  const res = await postJSONStream(url, { Authorization: 'Bearer ' + (config.api_key || '') }, body, 60000, (receivedLen, event, accumulated) => {
-    if (event === 'first_token') {
-      log.info('AI stream first token', { model, ttft_ms: Date.now() - startMs });
-    } else if (receivedLen > 0 && receivedLen % 500 < 20) {
-      // 每积累约 500 字符记录一次进度
-      log.info('AI stream progress', { model, received_chars: receivedLen, elapsed_ms: Date.now() - startMs });
+  let res;
+  try {
+    res = await postJSONStream(url, { Authorization: 'Bearer ' + (config.api_key || '') }, body, 60000, (receivedLen, event, accumulated) => {
+      if (event === 'first_token') {
+        log.info('AI stream first token', { model, ttft_ms: Date.now() - startMs });
+      } else if (receivedLen > 0 && receivedLen % 500 < 20) {
+        // 每积累约 500 字符记录一次进度
+        log.info('AI stream progress', { model, received_chars: receivedLen, elapsed_ms: Date.now() - startMs });
+      }
+      // 调用者提供的流式回调（如分镜增量解析），传入当前已积累的完整文本
+      if (streamCallback && accumulated) streamCallback(accumulated);
+    });
+  } catch (err) {
+    if (finalMaxTokens != null && isTokenParamUnsupportedError(err)) {
+      const retryBody = swapTokenLimitPayload(body, finalMaxTokens);
+      log.warn('AI generateText: token 参数不兼容，自动切换后重试', {
+        model,
+        from: 'max_tokens' in body ? 'max_tokens' : 'max_completion_tokens',
+        to: 'max_tokens' in retryBody ? 'max_tokens' : 'max_completion_tokens',
+      });
+      res = await postJSONStream(url, { Authorization: 'Bearer ' + (config.api_key || '') }, retryBody, 60000, (receivedLen, event, accumulated) => {
+        if (event === 'first_token') {
+          log.info('AI stream first token', { model, ttft_ms: Date.now() - startMs });
+        } else if (receivedLen > 0 && receivedLen % 500 < 20) {
+          log.info('AI stream progress', { model, received_chars: receivedLen, elapsed_ms: Date.now() - startMs });
+        }
+        if (streamCallback && accumulated) streamCallback(accumulated);
+      });
+    } else {
+      throw err;
     }
-    // 调用者提供的流式回调（如分镜增量解析），传入当前已积累的完整文本
-    if (streamCallback && accumulated) streamCallback(accumulated);
-  });
+  }
   // 流式模式下 res.body 已是拼接好的完整文本内容（非 JSON）
   const content = res.body;
   const elapsedMs = Date.now() - startMs;
@@ -425,7 +484,7 @@ async function streamGenerateText(db, log, serviceType, userPrompt, systemPrompt
       { role: 'user', content: userPrompt },
     ],
     temperature: Number(temperature),
-    ...(finalMaxTokens != null ? { max_tokens: finalMaxTokens } : {}),
+    ...buildTokenLimitPayload(model, finalMaxTokens),
     ...(json_mode ? { response_format: { type: 'json_object' } } : {}),
   };
   const silenceMs = options.silence_timeout_ms != null ? Number(options.silence_timeout_ms) : 120000;
@@ -438,21 +497,51 @@ async function streamGenerateText(db, log, serviceType, userPrompt, systemPrompt
     stream: true,
   });
   let lastLen = 0;
-  const res = await postJSONStream(
-    url,
-    { Authorization: 'Bearer ' + (config.api_key || '') },
-    body,
-    silenceMs,
-    (receivedLen, event, accumulated) => {
-      if (event === 'first_token') {
-        log.info('AI stream first token', { model, ttft_ms: Date.now() - startMs });
+  let res;
+  try {
+    res = await postJSONStream(
+      url,
+      { Authorization: 'Bearer ' + (config.api_key || '') },
+      body,
+      silenceMs,
+      (receivedLen, event, accumulated) => {
+        if (event === 'first_token') {
+          log.info('AI stream first token', { model, ttft_ms: Date.now() - startMs });
+        }
+        if (!accumulated || accumulated.length <= lastLen) return;
+        const delta = accumulated.slice(lastLen);
+        lastLen = accumulated.length;
+        if (onDelta && delta) onDelta(delta);
       }
-      if (!accumulated || accumulated.length <= lastLen) return;
-      const delta = accumulated.slice(lastLen);
-      lastLen = accumulated.length;
-      if (onDelta && delta) onDelta(delta);
+    );
+  } catch (err) {
+    if (finalMaxTokens != null && isTokenParamUnsupportedError(err)) {
+      const retryBody = swapTokenLimitPayload(body, finalMaxTokens);
+      log.warn('AI streamGenerateText: token 参数不兼容，自动切换后重试', {
+        model,
+        from: 'max_tokens' in body ? 'max_tokens' : 'max_completion_tokens',
+        to: 'max_tokens' in retryBody ? 'max_tokens' : 'max_completion_tokens',
+      });
+      lastLen = 0;
+      res = await postJSONStream(
+        url,
+        { Authorization: 'Bearer ' + (config.api_key || '') },
+        retryBody,
+        silenceMs,
+        (receivedLen, event, accumulated) => {
+          if (event === 'first_token') {
+            log.info('AI stream first token', { model, ttft_ms: Date.now() - startMs });
+          }
+          if (!accumulated || accumulated.length <= lastLen) return;
+          const delta = accumulated.slice(lastLen);
+          lastLen = accumulated.length;
+          if (onDelta && delta) onDelta(delta);
+        }
+      );
+    } else {
+      throw err;
     }
-  );
+  }
   const content = res.body;
   if (!content) {
     throw new Error('AI 返回内容为空');
@@ -556,7 +645,8 @@ async function generateTextWithVision(db, log, serviceType, userPrompt, systemPr
   });
 
   const maxTok = Number(max_tokens);
-  // o1/o3/o4 系列推理模型不支持 temperature，且 system role 需改为 developer role
+  // o* 与 gpt-5 系列走 max_completion_tokens；其中 o* 系列不支持 temperature
+  const useMaxCompletionTokens = modelNeedsMaxCompletionTokens(model);
   const isReasoningModel = /^o\d/i.test(model);
   const systemRole = isReasoningModel ? 'developer' : 'system';
 
@@ -566,7 +656,7 @@ async function generateTextWithVision(db, log, serviceType, userPrompt, systemPr
     : userPrompt;
 
   // OpenAI vision 消息格式
-  // max_tokens 供旧版/普通模型使用；max_completion_tokens 供推理模型（o1/o3/o4）使用
+  // 旧模型使用 max_tokens；o* / gpt-5 使用 max_completion_tokens
   const body = {
     model,
     messages: [
@@ -579,8 +669,8 @@ async function generateTextWithVision(db, log, serviceType, userPrompt, systemPr
         ],
       },
     ],
-    // 推理模型用 max_completion_tokens，普通模型用 max_tokens，不能同时传
-    ...(isReasoningModel ? { max_completion_tokens: maxTok } : { max_tokens: maxTok }),
+    // 两种 token 参数不能同时传
+    ...(useMaxCompletionTokens ? { max_completion_tokens: maxTok } : { max_tokens: maxTok }),
     // 推理模型不支持 temperature，跳过
     ...(isReasoningModel ? {} : { temperature: Number(temperature) }),
   };

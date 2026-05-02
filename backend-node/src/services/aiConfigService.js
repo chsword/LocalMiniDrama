@@ -226,6 +226,19 @@ function rowToConfig(r) {
   return cfg;
 }
 
+function modelNeedsMaxCompletionTokens(model) {
+  const m = String(model || '').toLowerCase();
+  return /^o\d/.test(m) || m.startsWith('gpt-5');
+}
+
+function buildTokenLimitPayload(model, maxTokens) {
+  const n = Number(maxTokens);
+  if (!Number.isFinite(n) || n <= 0) return {};
+  return modelNeedsMaxCompletionTokens(model)
+    ? { max_completion_tokens: n }
+    : { max_tokens: n };
+}
+
 /**
  * 测试连接：与 Go AIService.TestConnection 对齐，根据 provider 发最小请求验证 base_url + api_key
  * @param opts { base_url, api_key, model (string|string[]), provider?, endpoint? }
@@ -329,7 +342,11 @@ async function testConnection(opts) {
   // 通义万象 / WAN 系列：API key 通过 compatible-mode chat 接口验证即可（同一 key 通用）
   if (isDashscope && (isImageService || isVideoService || looksLikeImageModel || looksLikeVideoModel || isDashscopeNonChatEndpoint)) {
     const chatUrl = base.replace(/\/(api\/v1|compatible-mode)\/.*$/, '') + '/compatible-mode/v1/chat/completions';
-    const body = { model: 'qwen-turbo', messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 };
+    const body = {
+      model: 'qwen-turbo',
+      messages: [{ role: 'user', content: 'hi' }],
+      ...buildTokenLimitPayload('qwen-turbo', 1),
+    };
     console.log('[testConnection] DashScope 非文本服务，用 compatible chat 验证 key', { chatUrl, serviceType, model });
     const res = await fetch(chatUrl, {
       method: 'POST',
@@ -351,7 +368,11 @@ async function testConnection(opts) {
   if (isVideoService || looksLikeVideoModel) {
     const chatPath = '/chat/completions';
     const url = base + chatPath;
-    const body = { model: model || '', messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 };
+    const body = {
+      model: model || '',
+      messages: [{ role: 'user', content: 'hi' }],
+      ...buildTokenLimitPayload(model || '', 1),
+    };
     console.log('[testConnection] 视频服务，用 chat/completions 验证 key', { url, serviceType, model });
     const res = await fetch(url, {
       method: 'POST',
@@ -416,7 +437,7 @@ async function testConnection(opts) {
   const body = {
     model: model || 'gpt-3.5-turbo',
     messages: [{ role: 'user', content: 'Hello' }],
-    max_tokens: 5,
+    ...buildTokenLimitPayload(model || 'gpt-3.5-turbo', 5),
   };
   console.log('[testConnection] 文本/chat 服务', { url, serviceType, model });
   const res = await fetch(url, {
