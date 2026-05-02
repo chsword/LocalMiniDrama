@@ -178,6 +178,8 @@ npm run dev
 
 也可双击根目录的 `run_dev.bat` **一键同时启动**前端和后端。
 
+Linux / macOS 可执行：`./run_dev.sh`（同样一键同时启动前后端，优先使用 pnpm 国内源）。
+
 📖 更详细的开发、打包、Docker 指南请见 → **[快速开始文档](docs/quickstart.md)**
 
 ---

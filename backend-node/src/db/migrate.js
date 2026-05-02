@@ -22,9 +22,10 @@ function runOne(database, sql, file, index) {
     console.log('Ran migration:', file + (index >= 0 ? ' #' + (index + 1) : ''));
   } catch (err) {
     const msg = (err.message || '').toLowerCase();
-    if (err.code === 'SQLITE_ERROR' && (msg.includes('duplicate column') || msg.includes('already exists'))) {
+    const isSqliteError = String(err.code || '').toUpperCase().includes('SQLITE_ERROR');
+    if (isSqliteError && (msg.includes('duplicate column') || msg.includes('already exists'))) {
       console.log('Skip (already exists):', file + (index >= 0 ? ' #' + (index + 1) : ''));
-    } else if (err.code === 'SQLITE_ERROR' && msg.includes('no such table')) {
+    } else if (isSqliteError && msg.includes('no such table')) {
       // ALTER TABLE 遇到表不存在时，记录警告并跳过（启动后 ensureAllColumns 会兜底建表补列）
       console.warn('Skip migration (table not found, will be ensured later):', file, '-', err.message);
     } else {
