@@ -6164,10 +6164,21 @@ async function runRepairPipeline() {
 }
 
 
+function unlockPageScroll() {
+  // 某些弹窗在异常关闭/路由切换时可能残留锁滚动状态，导致页面无法滚动
+  if (typeof document === 'undefined') return
+  document.body.classList.remove('el-popup-parent--hidden')
+  document.documentElement.classList.remove('el-popup-parent--hidden')
+  if (document.body.style.overflow === 'hidden') document.body.style.overflow = ''
+  if (document.documentElement.style.overflow === 'hidden') document.documentElement.style.overflow = ''
+}
+
 onBeforeUnmount(() => {
+  unlockPageScroll()
 })
 
 onMounted(() => {
+  unlockPageScroll()
   loadPipelineConcurrency()
   const id = route.params.id
   if (id && id !== 'new') {
